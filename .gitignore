@@ -1,0 +1,24 @@
+# Secrets / local config
+.env
+.env.*
+!.env.example
+
+# Logs and runtime output
+logs/
+*.log
+
+# Test artifacts / exports
+*.csv
+speech_turns_*.csv
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# Editor / OS
+.vscode/
+.DS_Store
+Thumbs.db
