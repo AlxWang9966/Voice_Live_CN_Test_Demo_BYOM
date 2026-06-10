@@ -18,53 +18,22 @@ Generated files such as `.env`, `logs/`, and `__pycache__/` are intentionally ig
 
 ## Quick Start
 
-1. Install Python 3.10+ and make sure `py` works from PowerShell.
-
-2. Install dependencies:
-
 ```powershell
+# 1. Install dependencies (Python 3.10+)
 py -m pip install -r requirements.txt
-```
 
-3. Copy `.env.example` to `.env` and fill in:
+# 2. Copy the template and fill in your keys
+copy .env.example .env
 
-```env
-AZURE_VOICELIVE_ENDPOINT=https://<your-speech-resource>.cognitiveservices.azure.cn/
-AZURE_VOICELIVE_API_KEY=<your-speech-key>
-
-BYOM_API_KEY=<baseline-or-foundry-key>
-BYOM_DOUBAO_API_KEY=<ark-key>
-BYOM_DEEPSEEK_API_KEY=<deepseek-or-foundry-token>
-BYOM_KIMI_API_KEY=<kimi-or-foundry-token>
-BYOM_MINIMAX_API_KEY=<minimax-key>
-```
-
-Only fill the provider keys you plan to test. The web page also lets you paste a key/token for a single run.
-
-4. Start the console:
-
-```powershell
+# 3. Start the console (or double-click start_web_console.cmd)
 py web_test_server.py --open
 ```
 
-Or double-click `start_web_console.cmd`.
+The browser opens at `http://127.0.0.1:8765/`. Pick a provider, confirm the endpoint/model, then click `Start test` and speak into the microphone.
 
-5. Open the local page if it does not open automatically:
+Only fill the provider keys you plan to test. You can also paste a key/token in the web page for a single run instead of storing it in `.env`.
 
-```text
-http://127.0.0.1:8765/
-```
-
-## Test Flow
-
-1. Select `Baseline`, `Doubao`, `DeepSeek`, `Kimi`, or `MiniMax`.
-2. Confirm the endpoint, model name, and auth mode.
-3. Keep `Model key / token` blank if the key is already in `.env`, or paste a temporary key for this run.
-4. Click `Start test` and speak into the machine microphone.
-5. Click `Stop test` when finished.
-6. Review the saved metrics, open details, compare runs, or export CSV.
-
-The local server stores logs under `logs/`. The browser stores comparison history in localStorage. Secrets are not written into the result history or CSV export.
+For the full walkthrough — `.env` fields, test steps, metric definitions, and troubleshooting — see [`Customer_BYOM_Testing_Quickstart.md`](Customer_BYOM_Testing_Quickstart.md).
 
 ## Verified Providers
 
@@ -81,8 +50,7 @@ If your deployment uses a different endpoint or model name, update it in `.env` 
 ## Notes
 
 - Voice speed is fixed at `10%` for customer testing.
-- Doubao must use a real Ark API key and a versioned model ID such as `doubao-seed-2-0-lite-260428`.
-- DeepSeek and Kimi can use a pasted Bearer token. If no key/token is configured, the server can attempt an Azure CLI token for Foundry-based deployments.
-- Keep `.env` local and do not commit or share real keys.
+- Provider-specific keys take precedence over the generic `BYOM_API_KEY` (e.g. Doubao uses `BYOM_DOUBAO_API_KEY`).
+- Keep `.env` local and never commit or share real keys.
 
-See `Customer_BYOM_Testing_Quickstart.md` for the customer-facing step-by-step guide.
+For metric definitions, troubleshooting, and a test-record template, see [`Customer_BYOM_Testing_Quickstart.md`](Customer_BYOM_Testing_Quickstart.md).
