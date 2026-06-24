@@ -4,6 +4,7 @@ import argparse
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import threading
@@ -14,7 +15,9 @@ from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
+from urllib.error import HTTPError
+from urllib.request import Request, urlopen
 
 ROOT = Path(__file__).resolve().parent
 HTML_FILE = ROOT / "VoiceLive_BYOM_Test_Console.html"
@@ -140,6 +143,21 @@ def server_config() -> dict[str, Any]:
     }
 
 
+def presets_for_client() -> dict[str, dict[str, str]]:
+    load_local_env(override=True)
+    resolved: dict[str, dict[str, str]] = {}
+    for key, preset in MODEL_PRESETS.items():
+        item = dict(preset)
+        env_endpoint = provider_env(key, "ENDPOINT")
+        env_model = provider_env(key, "MODEL_TYPE")
+        if env_endpoint:
+            item["endpoint"] = env_endpoint
+        if env_model:
+            item["modelType"] = env_model
+        resolved[key] = item
+    return resolved
+
+
 def latest_log_after(started_at: float | None) -> Path | None:
     if not LOG_DIR.exists():
         return None
@@ -173,7 +191,19 @@ def read_log(path: Path | None) -> str:
     return path.read_text(encoding="utf-8", errors="replace")
 
 
+def metric_from_log_name(log_name: str) -> dict[str, Any]:
+    name = Path(log_name).name
+    if not name.endswith("_voicelive.log"):
+        raise RuntimeError("invalid log name")
+    path = (LOG_DIR / name).resolve()
+    if path.parent != LOG_DIR.resolve() or not path.exists():
+        raise RuntimeError("log file not found")
+    run_id = path.stem
+    return parse_log(read_log(path), run_id=run_id)
+
+
 LOG_LINE_RE = re.compile(r"^(?P<ts>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d{3}):(?P<body>.*)$")
+SESSION_ID_RE = re.compile(r"\bsess_[A-Za-z0-9]+\b")
 
 
 def parse_log_time(value: str) -> float | None:
@@ -205,6 +235,9 @@ def parse_log(text: str, model_label: str | None = None, run_id: str | None = No
     errors: list[str] = []
     transcripts: list[str] = []
     token_totals = {"input": 0, "output": 0, "total": 0, "reasoning": 0}
+    turns: list[dict[str, Any]] = []
+    response_turns: dict[str, dict[str, Any]] = {}
+    current_speech_start_ts: float | None = None
     first_ts: float | None = None
     last_ts: float | None = None
     ready_ts: float | None = None
@@ -214,7 +247,9 @@ def parse_log(text: str, model_label: str | None = None, run_id: str | None = No
     first_transcript_ts: float | None = None
     first_response_created_ts: float | None = None
     first_response_done_ts: float | None = None
+    first_output_text_ts: float | None = None
     first_audio_ts: float | None = None
+    session_id: str = ""
 
     for line in text.splitlines():
         match = LOG_LINE_RE.match(line)
@@ -232,25 +267,89 @@ def parse_log(text: str, model_label: str | None = None, run_id: str | None = No
         event = parse_json_event(body)
         if not event:
             continue
+        if not session_id:
+            session_candidate = str((event.get("session") or {}).get("id") or event.get("session_id") or "").strip()
+            if session_candidate.startswith("sess_"):
+                session_id = session_candidate
+            else:
+                fallback_match = SESSION_ID_RE.search(body)
+                if fallback_match:
+                    session_id = fallback_match.group(0)
         event_type = str(event.get("type") or "")
         if event_type:
             event_counts[event_type] = event_counts.get(event_type, 0) + 1
         if event_type == "input_audio_buffer.speech_started" and first_speech_ts is None:
             first_speech_ts = ts
+            current_speech_start_ts = ts
+        elif event_type == "input_audio_buffer.speech_started":
+            current_speech_start_ts = ts
         elif event_type == "input_audio_buffer.speech_stopped":
             last_speech_stop_ts = ts
+            turns.append({
+                "index": len(turns) + 1,
+                "speechStartedTs": current_speech_start_ts,
+                "speechStoppedTs": ts,
+                "transcriptTs": None,
+                "transcript": "",
+                "responseId": "",
+                "responseCreatedTs": None,
+                "firstOutputTextTs": None,
+                "firstAudioTs": None,
+                "responseDoneTs": None,
+            })
         elif event_type == "conversation.item.input_audio_transcription.completed":
             first_transcript_ts = first_transcript_ts or ts
             transcript = str(event.get("transcript") or "").strip()
             if transcript:
                 transcripts.append(transcript)
+            for turn in reversed(turns):
+                if turn["transcriptTs"] is None:
+                    turn["transcriptTs"] = ts
+                    turn["transcript"] = transcript
+                    break
         elif event_type == "response.created" and first_response_created_ts is None:
             first_response_created_ts = ts
+            response_id = str((event.get("response") or {}).get("id") or "")
+            for turn in reversed(turns):
+                if turn["responseCreatedTs"] is None and turn["speechStoppedTs"] is not None and ts is not None and ts >= turn["speechStoppedTs"]:
+                    turn["responseCreatedTs"] = ts
+                    turn["responseId"] = response_id
+                    if response_id:
+                        response_turns[response_id] = turn
+                    break
+        elif event_type == "response.created":
+            response_id = str((event.get("response") or {}).get("id") or "")
+            for turn in reversed(turns):
+                if turn["responseCreatedTs"] is None and turn["speechStoppedTs"] is not None and ts is not None and ts >= turn["speechStoppedTs"]:
+                    turn["responseCreatedTs"] = ts
+                    turn["responseId"] = response_id
+                    if response_id:
+                        response_turns[response_id] = turn
+                    break
+        elif event_type == "response.audio_transcript.delta":
+            first_output_text_ts = first_output_text_ts or ts
+            response_id = str(event.get("response_id") or "")
+            turn = response_turns.get(response_id)
+            if turn and turn["firstOutputTextTs"] is None:
+                turn["firstOutputTextTs"] = ts
         elif event_type == "response.audio.delta" and first_audio_ts is None:
             first_audio_ts = ts
+            response_id = str(event.get("response_id") or "")
+            turn = response_turns.get(response_id)
+            if turn and turn["firstAudioTs"] is None:
+                turn["firstAudioTs"] = ts
+        elif event_type == "response.audio.delta":
+            response_id = str(event.get("response_id") or "")
+            turn = response_turns.get(response_id)
+            if turn and turn["firstAudioTs"] is None:
+                turn["firstAudioTs"] = ts
         elif event_type == "response.done":
             first_response_done_ts = first_response_done_ts or ts
             response = event.get("response") or {}
+            response_id = str(response.get("id") or "")
+            turn = response_turns.get(response_id)
+            if turn and turn["responseDoneTs"] is None:
+                turn["responseDoneTs"] = ts
             status_details = response.get("status_details") or {}
             status_error = status_details.get("error") or {}
             if status_error:
@@ -269,10 +368,41 @@ def parse_log(text: str, model_label: str | None = None, run_id: str | None = No
             if "Cancellation failed: no active response" not in message:
                 errors.append(message)
 
+    turn_metrics: list[dict[str, Any]] = []
+    for turn in turns:
+        speech_stop = turn["speechStoppedTs"]
+        transcript_done = turn["transcriptTs"]
+        response_created = turn["responseCreatedTs"]
+        first_output_text = turn["firstOutputTextTs"]
+        first_audio = turn["firstAudioTs"]
+        response_done = turn["responseDoneTs"]
+        turn_metrics.append({
+            "index": turn["index"],
+            "responseId": turn["responseId"],
+            "transcript": turn["transcript"],
+            "speechDurationMs": elapsed_ms(turn["speechStartedTs"], speech_stop),
+            "asrFinalizationMs": elapsed_ms(speech_stop, transcript_done),
+            "turnEndToResponseCreatedMs": elapsed_ms(speech_stop, response_created),
+            "llmFirstTextMs": elapsed_ms(transcript_done, first_output_text),
+            "responseCreatedToFirstTextMs": elapsed_ms(response_created, first_output_text),
+            "ttsFirstAudioMs": elapsed_ms(first_output_text, first_audio),
+            "turnEndToFirstAudioMs": elapsed_ms(speech_stop, first_audio),
+            "responseCreatedToFirstAudioMs": elapsed_ms(response_created, first_audio),
+            "turnEndToResponseDoneMs": elapsed_ms(speech_stop, response_done),
+        })
+
+    first_user_turn = next((turn for turn in turn_metrics if turn["turnEndToFirstAudioMs"] is not None), None)
+    first_response_turn = next((turn for turn in turn_metrics if turn["turnEndToResponseCreatedMs"] is not None), None)
+    first_text_turn = next((turn for turn in turn_metrics if turn["llmFirstTextMs"] is not None), None)
+    if not session_id:
+        fallback_match = SESSION_ID_RE.search(text)
+        if fallback_match:
+            session_id = fallback_match.group(0)
     config = test_config or {}
     metrics: dict[str, Any] = {
         "timestamp": time.time(),
         "runId": run_id or "",
+        "sessionId": session_id,
         "model": model_label or "",
         "provider": config.get("provider", ""),
         "modelType": config.get("modelType", ""),
@@ -296,11 +426,20 @@ def parse_log(text: str, model_label: str | None = None, run_id: str | None = No
         "audioReadyMs": elapsed_ms(first_ts, audio_ready_ts),
         "firstSpeechMs": elapsed_ms(first_ts, first_speech_ts),
         "firstTranscriptMs": elapsed_ms(first_ts, first_transcript_ts),
-        "firstResponseCreatedMs": elapsed_ms(first_ts, first_response_created_ts),
+        "firstResponseCreatedMs": first_response_turn["turnEndToResponseCreatedMs"] if first_response_turn else None,
+        "firstResponseCreatedFromStartMs": elapsed_ms(first_ts, first_response_created_ts),
         "firstResponseDoneMs": elapsed_ms(first_ts, first_response_done_ts),
-        "firstAudioMs": elapsed_ms(first_ts, first_audio_ts),
-        "modelLatencyMs": elapsed_ms(last_speech_stop_ts, first_response_created_ts),
-        "firstAudioAfterSpeechMs": elapsed_ms(last_speech_stop_ts, first_audio_ts),
+        "firstAudioMs": first_user_turn["turnEndToFirstAudioMs"] if first_user_turn else None,
+        "firstAudioFromStartMs": elapsed_ms(first_ts, first_audio_ts),
+        "asrFinalizationMs": first_text_turn["asrFinalizationMs"] if first_text_turn else None,
+        "llmFirstTextMs": first_text_turn["llmFirstTextMs"] if first_text_turn else None,
+        "responseCreatedToFirstTextMs": first_text_turn["responseCreatedToFirstTextMs"] if first_text_turn else None,
+        "ttsFirstAudioMs": first_user_turn["ttsFirstAudioMs"] if first_user_turn else None,
+        "modelLatencyMs": first_response_turn["turnEndToResponseCreatedMs"] if first_response_turn else None,
+        "firstAudioAfterSpeechMs": first_user_turn["turnEndToFirstAudioMs"] if first_user_turn else None,
+        "responseCreatedToFirstAudioMs": first_user_turn["responseCreatedToFirstAudioMs"] if first_user_turn else None,
+        "firstOutputTextFromStartMs": elapsed_ms(first_ts, first_output_text_ts),
+        "turnMetrics": turn_metrics,
         "inputTokens": token_totals["input"],
         "outputTokens": token_totals["output"],
         "totalTokens": token_totals["total"],
@@ -311,9 +450,11 @@ def parse_log(text: str, model_label: str | None = None, run_id: str | None = No
     metrics["pendingResponses"] = max(0, metrics["responseCreated"] - metrics["responseDone"])
     if metrics["failed"] or metrics["errors"]:
         metrics["status"] = "Failed"
-    elif metrics["completed"] and metrics["audioDelta"]:
+    elif metrics["ready"] and metrics["audioDelta"] and not metrics["speechStarted"]:
+        metrics["status"] = "No speech turn"
+    elif metrics["speechStopped"] and metrics["completed"] and metrics["audioDelta"] and metrics["firstAudioAfterSpeechMs"] is not None:
         metrics["status"] = "Passed"
-    elif metrics["cancelled"] and metrics["audioDelta"]:
+    elif metrics["speechStopped"] and metrics["cancelled"] and metrics["audioDelta"]:
         metrics["status"] = "Partial"
     elif metrics["ready"] and metrics["pendingResponses"]:
         metrics["status"] = "Waiting for response"
@@ -325,8 +466,11 @@ def parse_log(text: str, model_label: str | None = None, run_id: str | None = No
 
 
 def get_az_token() -> str:
+    az_path = shutil.which("az") or shutil.which("az.cmd")
+    if not az_path:
+        raise RuntimeError("Azure CLI (az) was not found on PATH. Install it and run 'az login', or paste a token in the page.")
     result = subprocess.run(
-        ["az", "account", "get-access-token", "--resource", "https://ai.azure.com", "--query", "accessToken", "-o", "tsv"],
+        [az_path, "account", "get-access-token", "--resource", "https://ai.azure.com", "--query", "accessToken", "-o", "tsv"],
         cwd=ROOT,
         text=True,
         capture_output=True,
@@ -338,6 +482,27 @@ def get_az_token() -> str:
     if not token:
         raise RuntimeError("az returned an empty token")
     return token
+
+
+def key_auth_disabled(endpoint: str, key: str, auth_mode: str) -> bool:
+    """Return True if the Foundry resource rejected key auth (AuthenticationTypeDisabled)."""
+    url = endpoint.rstrip("/") + "/models"
+    header_name = "Authorization" if auth_mode == "bearer" else "api-key"
+    header_value = f"Bearer {key}" if auth_mode == "bearer" else key
+    request = Request(url, headers={header_name: header_value}, method="GET")
+    try:
+        with urlopen(request, timeout=20):
+            return False
+    except HTTPError as error:
+        if error.code in (401, 403):
+            try:
+                body = error.read().decode("utf-8", "replace")
+            except Exception:
+                body = ""
+            return "AuthenticationTypeDisabled" in body
+        return False
+    except Exception:
+        return False
 
 
 def drain_output(process: subprocess.Popen[str]) -> None:
@@ -380,6 +545,11 @@ def start_test(payload: dict[str, Any]) -> dict[str, Any]:
     if not byom_key:
         raise RuntimeError(f"Model key/token is required for {preset['label']}. Paste it in the page or set BYOM_{provider_key.upper()}_API_KEY in .env.")
 
+    if provider_key in {"deepseek", "kimi"} and key_auth_disabled(byom_endpoint, byom_key, auth_mode):
+        STATE.output.append(f"[auth] {preset['label']}: key auth disabled on resource, switching to Azure AD token.")
+        byom_key = get_az_token()
+        auth_mode = "bearer"
+
     command = [
         sys.executable,
         str(ROOT / "byom_demo.py"),
@@ -393,6 +563,7 @@ def start_test(payload: dict[str, Any]) -> dict[str, Any]:
         "--byom-api-key", byom_key,
         "--byom-auth-scheme", auth_mode,
         "--voice-rate", voice_rate,
+        "--no-proactive-greeting",
         "--verbose",
     ]
 
@@ -518,7 +689,9 @@ class Handler(BaseHTTPRequestHandler):
         return
 
     def do_GET(self) -> None:
-        path = urlparse(self.path).path
+        parsed = urlparse(self.path)
+        path = parsed.path
+        query = parse_qs(parsed.query)
         if path in {"/", "/index.html", "/VoiceLive_BYOM_Test_Console.html"}:
             body = HTML_FILE.read_bytes()
             self.send_response(200)
@@ -527,7 +700,12 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(body)
         elif path == "/api/presets":
-            json_response(self, 200, {"models": MODEL_PRESETS})
+            json_response(self, 200, {"models": presets_for_client()})
+        elif path == "/api/metric-from-log":
+            log_name = str((query.get("log") or [""])[0] or "").strip()
+            if not log_name:
+                raise RuntimeError("Missing log query parameter")
+            json_response(self, 200, metric_from_log_name(log_name))
         elif path == "/api/status":
             json_response(self, 200, current_status())
         elif path == "/api/config":

@@ -59,6 +59,7 @@ timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
 logging.basicConfig(
     filename=f'logs/{timestamp}_voicelive.log',
     filemode="w",
+    encoding="utf-8",
     format='%(asctime)s:%(name)s:%(levelname)s:%(message)s',
     level=logging.INFO
 )
@@ -314,6 +315,7 @@ class BasicVoiceAssistant:
         byom_auth_headers: dict[str, Any],
         byom_extra_headers: dict[str, Any],
         byom_extra_body: dict[str, Any],
+        proactive_greeting: bool,
     ):
 
         self.endpoint = endpoint
@@ -334,6 +336,7 @@ class BasicVoiceAssistant:
         self.byom_auth_headers = byom_auth_headers
         self.byom_extra_headers = byom_extra_headers
         self.byom_extra_body = byom_extra_body
+        self.proactive_greeting = proactive_greeting
 
     async def start(self):
         """Start the voice assistant session."""
@@ -450,7 +453,7 @@ class BasicVoiceAssistant:
             self.session_ready = True
         
             # Proactive greeting
-            if not self.conversation_started:
+            if self.proactive_greeting and not self.conversation_started:
                 self.conversation_started = True
                 logger.info("Sending proactive greeting request")
                 try:
@@ -662,6 +665,13 @@ def parse_arguments():
         action="store_true",
     )
 
+    parser.add_argument(
+        "--no-proactive-greeting",
+        help="Disable the automatic initial Hello response. Recommended for latency measurement.",
+        action="store_true",
+        default=os.environ.get("AZURE_VOICELIVE_NO_PROACTIVE_GREETING", "").lower() in {"1", "true", "yes"},
+    )
+
     return parser.parse_args()
 
 
@@ -765,6 +775,7 @@ def main():
         voice=args.voice,
         voice_rate=args.voice_rate,
         instructions=args.instructions,
+        proactive_greeting=not args.no_proactive_greeting,
     )
 
     # Setup signal handlers for graceful shutdown

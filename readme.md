@@ -33,6 +33,24 @@ The browser opens at `http://127.0.0.1:8765/`. Pick a provider, confirm the endp
 
 Only fill the provider keys you plan to test. You can also paste a key/token in the web page for a single run instead of storing it in `.env`.
 
+## Scripted Runs
+
+For repeated command-line testing, use the provider wrapper. It reads `.env`, resolves the provider endpoint/model, disables the proactive greeting, and runs the same Voice Live runtime:
+
+```powershell
+.\run_demo.cmd deepseek
+.\run_demo.cmd kimi
+.\run_demo.cmd doubao
+```
+
+PowerShell users can call the script directly:
+
+```powershell
+.\run_demo.ps1 -Provider deepseek
+.\run_demo.ps1 -Provider kimi -PrintConfig
+.\run_demo.ps1 -Provider kimi -WithGreeting
+```
+
 For the full walkthrough — `.env` fields, test steps, metric definitions, and troubleshooting — see [`Customer_BYOM_Testing_Quickstart.md`](Customer_BYOM_Testing_Quickstart.md).
 
 ## Verified Providers
@@ -52,5 +70,6 @@ If your deployment uses a different endpoint or model name, update it in `.env` 
 - Voice speed is fixed at `10%` for customer testing.
 - Provider-specific keys take precedence over the generic `BYOM_API_KEY` (e.g. Doubao uses `BYOM_DOUBAO_API_KEY`).
 - Keep `.env` local and never commit or share real keys.
+- The web console disables the automatic proactive greeting for latency runs. The primary latency metric is now turn-based: from `input_audio_buffer.speech_stopped` to the following first `response.audio.delta`.
 
 For metric definitions, troubleshooting, and a test-record template, see [`Customer_BYOM_Testing_Quickstart.md`](Customer_BYOM_Testing_Quickstart.md).
