@@ -198,6 +198,7 @@
     let serverConfig = { providerKeysConfigured: {} };
     const storageKey = "voice-live-byom-web-results-v1";
     const historyPageSize = 10;
+    const sessionIdLookupAttempted = new Set();
     const $ = (id) => document.getElementById(id);
     const metricFields = [
       ["status", "Status"], ["ready", "Ready"], ["durationMs", "Run duration"], ["readyMs", "Ready latency"],
@@ -371,8 +372,8 @@
     }
 
     async function backfillSessionId(item) {
-      if (!item || item.sessionId || !item.logPath || item.sessionLookupDone) return;
-      item.sessionLookupDone = true;
+      if (!item || item.sessionId || !item.logPath || sessionIdLookupAttempted.has(item.fingerprint)) return;
+      sessionIdLookupAttempted.add(item.fingerprint);
       try {
         const logName = String(item.logPath).split(/[\\/]/).pop() || "";
         if (!logName) return;

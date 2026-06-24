@@ -692,26 +692,31 @@ class Handler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         path = parsed.path
         query = parse_qs(parsed.query)
-        if path in {"/", "/index.html", "/VoiceLive_BYOM_Test_Console.html"}:
-            body = HTML_FILE.read_bytes()
-            self.send_response(200)
-            self.send_header("Content-Type", "text/html; charset=utf-8")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
-        elif path == "/api/presets":
-            json_response(self, 200, {"models": presets_for_client()})
-        elif path == "/api/metric-from-log":
-            log_name = str((query.get("log") or [""])[0] or "").strip()
-            if not log_name:
-                raise RuntimeError("Missing log query parameter")
-            json_response(self, 200, metric_from_log_name(log_name))
-        elif path == "/api/status":
-            json_response(self, 200, current_status())
-        elif path == "/api/config":
-            json_response(self, 200, server_config())
-        else:
-            json_response(self, 404, {"error": "Not found"})
+        try:
+            if path in {"/", "/index.html", "/VoiceLive_BYOM_Test_Console.html"}:
+                body = HTML_FILE.read_bytes()
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+            elif path == "/api/presets":
+                json_response(self, 200, {"models": presets_for_client()})
+            elif path == "/api/metric-from-log":
+                log_name = str((query.get("log") or [""])[0] or "").strip()
+                if not log_name:
+                    raise RuntimeError("Missing log query parameter")
+                json_response(self, 200, metric_from_log_name(log_name))
+            elif path == "/api/status":
+                json_response(self, 200, current_status())
+            elif path == "/api/config":
+                json_response(self, 200, server_config())
+            else:
+                json_response(self, 404, {"error": "Not found"})
+        except Exception as exc:
+            with STATE.lock:
+                STATE.last_error = str(exc)
+            json_response(self, 400, {"error": str(exc), "status": current_status()})
 
     def do_POST(self) -> None:
         path = urlparse(self.path).path
