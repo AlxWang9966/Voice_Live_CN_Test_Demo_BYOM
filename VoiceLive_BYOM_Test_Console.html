@@ -114,7 +114,10 @@
     .detail-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
     .detail-item { padding: 11px; border: 1px solid var(--cp-border); border-radius: 0.625rem; background: var(--cp-surface-soft); min-height: 68px; }
     .detail-item strong { display: block; margin-top: 5px; font-size: 18px; overflow-wrap: anywhere; }
+    .detail-item.primary { border-color: var(--cp-accent); background: var(--cp-accent-soft); }
+    .detail-item.primary strong { font-size: 22px; }
     .detail-wide { grid-column: 1 / -1; }
+    .pager { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; justify-content: space-between; margin-top: 10px; }
     .tag { display: inline-flex; align-items: center; padding: 3px 7px; border-radius: 999px; background: var(--cp-accent-soft); color: var(--cp-text); font-size: 12px; }
     .link-button { border: 0; background: transparent; color: var(--cp-link); padding: 0; cursor: pointer; font-weight: 650; }
     @media (max-width: 900px) { .layout, .field-grid { grid-template-columns: 1fr; } .summary, .metrics, .detail-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } header { display: grid; } }
@@ -191,15 +194,21 @@
     let lastSavedFingerprint = "";
     let selectedResultId = "";
     let compareIds = [];
+    let historyPage = 1;
     let serverConfig = { providerKeysConfigured: {} };
     const storageKey = "voice-live-byom-web-results-v1";
+    const historyPageSize = 10;
+    const sessionIdLookupAttempted = new Set();
     const $ = (id) => document.getElementById(id);
     const metricFields = [
       ["status", "Status"], ["ready", "Ready"], ["durationMs", "Run duration"], ["readyMs", "Ready latency"],
       ["speechStarted", "Speech turns"], ["transcripts", "Transcripts"], ["responseCreated", "Responses created"], ["responseDone", "Responses done"],
-      ["audioDelta", "Audio chunks"], ["audioDone", "Audio done"], ["firstAudioMs", "First audio"], ["firstAudioAfterSpeechMs", "First audio after speech"],
+      ["audioDelta", "Audio chunks"], ["audioDone", "Audio done"], ["asrFinalizationMs", "ASR finalization"], ["llmFirstTextMs", "LLM first text"], ["ttsFirstAudioMs", "TTS first audio"],
+      ["modelLatencyMs", "Turn end to response created"], ["responseCreatedToFirstAudioMs", "Response created to first audio"], ["firstAudioMs", "Turn end to first audio"],
+      ["firstAudioFromStartMs", "First audio from start"],
       ["inputTokens", "Input tokens"], ["outputTokens", "Output tokens"], ["totalTokens", "Total tokens"], ["errors", "Errors"]
     ];
+    const primaryMetricKeys = new Set(["firstAudioMs"]);
 
     async function api(path, options = {}) {
       const response = await fetch(path, { headers: { "Content-Type": "application/json" }, ...options });
@@ -355,6 +364,35 @@
       return String(value ?? "").replace(/[&<>"]/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[ch]));
     }
 
+    function normalizeTranscript(value) {
+      const text = String(value ?? "");
+      if (!text) return "";
+      const brokenCount = (text.match(/�/g) || []).length;
+      return brokenCount >= 3 ? "[Transcript decode issue in source log]" : text;
+    }
+
+    async function backfillSessionId(item) {
+      if (!item || item.sessionId || !item.logPath || sessionIdLookupAttempted.has(item.fingerprint)) return;
+      sessionIdLookupAttempted.add(item.fingerprint);
+      try {
+        const logName = String(item.logPath).split(/[\\/]/).pop() || "";
+        if (!logName) return;
+        const metric = await api(`/api/metric-from-log?log=${encodeURIComponent(logName)}`);
+        if (!metric?.sessionId) return;
+        const items = loadHistory();
+        const index = items.findIndex((historyItem) => historyItem.fingerprint === item.fingerprint);
+        if (index < 0) return;
+        items[index].sessionId = metric.sessionId;
+        localStorage.setItem(storageKey, JSON.stringify(items.slice(0, 50)));
+        if (selectedResultId === item.fingerprint) {
+          const sessionNode = $("detailSessionId");
+          if (sessionNode) sessionNode.textContent = metric.sessionId;
+        }
+      } catch {
+        // Old entries may point to logs that no longer exist; keep showing "-".
+      }
+    }
+
     function saveMetric(metric, status) {
       const fingerprint = metric.runId || status.runId || `${metric.model}-${metric.status}-${metric.audioDelta}-${metric.errors}-${metric.completed}-${metric.cancelled}-${status.logPath || ""}`;
       if (fingerprint === lastSavedFingerprint) return;
@@ -363,6 +401,7 @@
       if (items.some((item) => item.fingerprint === fingerprint)) return;
       items.unshift({ ...metric, fingerprint, savedAt: new Date().toISOString(), logPath: status.logPath, exitCode: status.exitCode, testConfig: status.testConfig || {} });
       localStorage.setItem(storageKey, JSON.stringify(items.slice(0, 50)));
+      historyPage = 1;
       renderHistory();
     }
 
@@ -375,9 +414,17 @@
         return;
       }
       if (!selectedResultId || !items.some((item) => item.fingerprint === selectedResultId)) selectedResultId = items[0].fingerprint;
-      const rows = items.map((item) => `<tr><td><input type="checkbox" data-compare="${safe(item.fingerprint)}" ${compareIds.includes(item.fingerprint) ? "checked" : ""}></td><td>${new Date(item.savedAt || Date.now()).toLocaleString()}</td><td>${safe(item.model || "")}</td><td><span class="tag">${safe(item.status || "")}</span></td><td>${fmt(item.ready)}</td><td>${fmt(item.speechStarted)}</td><td>${fmt(item.audioDelta)}</td><td>${fmt(item.firstAudioMs, "firstAudioMs")}</td><td>${fmt((item.errors || 0) + (item.failed || 0))}</td><td><button class="link-button" data-detail="${safe(item.fingerprint)}">Details</button></td></tr>`).join("");
-      $("historyWrap").innerHTML = `<table><thead><tr><th>Compare</th><th>Saved</th><th>Model</th><th>Status</th><th>Ready</th><th>Speech</th><th>Audio</th><th>First audio</th><th>Errors</th><th></th></tr></thead><tbody>${rows}</tbody></table>`;
-      document.querySelectorAll("[data-detail]").forEach((button) => button.addEventListener("click", () => { selectedResultId = button.dataset.detail; renderHistory(); }));
+      const totalPages = Math.max(1, Math.ceil(items.length / historyPageSize));
+      historyPage = Math.min(Math.max(1, historyPage), totalPages);
+      const pageItems = items.slice((historyPage - 1) * historyPageSize, historyPage * historyPageSize);
+      const rows = pageItems.map((item) => `<tr><td><input type="checkbox" data-compare="${safe(item.fingerprint)}" ${compareIds.includes(item.fingerprint) ? "checked" : ""}></td><td>${new Date(item.savedAt || Date.now()).toLocaleString()}</td><td>${safe(item.model || "")}</td><td><span class="tag">${safe(item.status || "")}</span></td><td>${fmt(item.ready)}</td><td>${fmt(item.speechStarted)}</td><td>${fmt(item.audioDelta)}</td><td>${fmt(item.firstAudioMs, "firstAudioMs")}</td><td>${fmt((item.errors || 0) + (item.failed || 0))}</td><td><button class="link-button" data-detail="${safe(item.fingerprint)}">Details</button></td></tr>`).join("");
+      const start = (historyPage - 1) * historyPageSize + 1;
+      const end = Math.min(items.length, historyPage * historyPageSize);
+      const pager = `<div class="pager"><span class="small">Showing ${start}-${end} of ${items.length}</span><div class="inline"><button class="button" id="prevHistory" ${historyPage <= 1 ? "disabled" : ""}>Previous</button><span class="small">Page ${historyPage} / ${totalPages}</span><button class="button" id="nextHistory" ${historyPage >= totalPages ? "disabled" : ""}>Next</button></div></div>`;
+      $("historyWrap").innerHTML = `<table><thead><tr><th>Compare</th><th>Saved</th><th>Model</th><th>Status</th><th>Ready</th><th>Speech</th><th>Audio</th><th>Turn to audio</th><th>Errors</th><th></th></tr></thead><tbody>${rows}</tbody></table>${pager}`;
+      $("prevHistory")?.addEventListener("click", () => { historyPage -= 1; renderHistory(); });
+      $("nextHistory")?.addEventListener("click", () => { historyPage += 1; renderHistory(); });
+      document.querySelectorAll("[data-detail]").forEach((button) => button.addEventListener("click", () => { selectedResultId = button.dataset.detail; renderHistory(); $("detailWrap").scrollIntoView({ behavior: "smooth", block: "start" }); }));
       document.querySelectorAll("[data-compare]").forEach((box) => box.addEventListener("change", () => toggleCompare(box.dataset.compare, box.checked)));
       renderDetail(items.find((item) => item.fingerprint === selectedResultId) || items[0]);
       renderCompare();
@@ -386,10 +433,14 @@
     function renderDetail(item) {
       if (!item) return;
       const config = item.testConfig || {};
-      const cards = metricFields.map(([key, label]) => `<div class="detail-item"><span class="small">${label}</span><strong>${safe(fmt(item[key], key))}</strong></div>`).join("");
-      const transcripts = (item.transcriptSamples || []).map((text) => `<span class="tag">${safe(text)}</span>`).join(" ") || "-";
+      const sessionId = item.sessionId || "-";
+      const cards = metricFields.map(([key, label]) => `<div class="detail-item ${primaryMetricKeys.has(key) ? "primary" : ""}"><span class="small">${label}</span><strong>${safe(fmt(item[key], key))}</strong></div>`).join("");
+      const transcripts = (item.transcriptSamples || []).map((text) => `<span class="tag">${safe(normalizeTranscript(text))}</span>`).join(" ") || "-";
       const errors = (item.errorMessages || []).map((text) => `<span class="tag">${safe(text)}</span>`).join(" ") || "-";
-      $("detailWrap").innerHTML = `<div class="panel" style="box-shadow:none;"><div class="inline" style="justify-content: space-between; margin-bottom: 12px;"><h2>Run details</h2><span class="small">${safe(item.logPath || "No log")}</span></div><div class="detail-grid">${cards}<div class="detail-item detail-wide"><span class="small">Configuration</span><strong>${safe(config.providerLabel || item.model || "")} / ${safe(config.modelType || item.modelType || "")} / ${safe(config.authMode || "")}</strong><div class="small">${safe(config.byomEndpoint || "")}</div></div><div class="detail-item detail-wide"><span class="small">Transcript samples</span><strong>${transcripts}</strong></div><div class="detail-item detail-wide"><span class="small">Errors</span><strong>${errors}</strong></div></div></div>`;
+      const turnRows = (item.turnMetrics || []).map((turn) => `<tr><td>${safe(turn.index)}</td><td>${safe(fmt(turn.speechDurationMs, "speechDurationMs"))}</td><td>${safe(fmt(turn.asrFinalizationMs, "asrFinalizationMs"))}</td><td>${safe(fmt(turn.llmFirstTextMs, "llmFirstTextMs"))}</td><td>${safe(fmt(turn.ttsFirstAudioMs, "ttsFirstAudioMs"))}</td><td><strong>${safe(fmt(turn.turnEndToFirstAudioMs, "turnEndToFirstAudioMs"))}</strong></td><td>${safe(normalizeTranscript(turn.transcript || ""))}</td></tr>`).join("");
+      const turnTable = turnRows ? `<table><thead><tr><th>Turn</th><th>Speech</th><th>ASR final</th><th>LLM first text</th><th>TTS first audio</th><th>Turn to audio</th><th>Transcript</th></tr></thead><tbody>${turnRows}</tbody></table>` : "-";
+      $("detailWrap").innerHTML = `<div class="panel" style="box-shadow:none;"><div class="inline" style="justify-content: space-between; margin-bottom: 12px;"><h2>Run details</h2><span class="small">${safe(item.logPath || "No log")}</span></div><div class="detail-grid">${cards}<div class="detail-item detail-wide"><span class="small">Configuration</span><strong>${safe(config.providerLabel || item.model || "")} / ${safe(config.modelType || item.modelType || "")} / ${safe(config.authMode || "")}</strong><div class="small">${safe(config.byomEndpoint || "")}</div></div><div class="detail-item detail-wide"><span class="small">Session ID</span><strong id="detailSessionId">${safe(sessionId)}</strong></div><div class="detail-item detail-wide"><span class="small">Turn metrics</span>${turnTable}</div><div class="detail-item detail-wide"><span class="small">Transcript samples</span><strong>${transcripts}</strong></div><div class="detail-item detail-wide"><span class="small">Errors</span><strong>${errors}</strong></div></div></div>`;
+      backfillSessionId(item);
     }
 
     function toggleCompare(id, checked) {
@@ -410,7 +461,7 @@
     }
 
     function exportCsv() {
-      const header = ["savedAt", "runId", "model", "provider", "modelType", "status", "ready", "durationMs", "readyMs", "speechStarted", "speechStopped", "transcripts", "responseCreated", "responseDone", "audioDelta", "audioDone", "firstAudioMs", "firstAudioAfterSpeechMs", "inputTokens", "outputTokens", "totalTokens", "completed", "cancelled", "failed", "errors", "logPath"];
+      const header = ["savedAt", "runId", "sessionId", "model", "provider", "modelType", "status", "ready", "durationMs", "readyMs", "speechStarted", "speechStopped", "transcripts", "responseCreated", "responseDone", "audioDelta", "audioDone", "asrFinalizationMs", "llmFirstTextMs", "ttsFirstAudioMs", "firstAudioMs", "responseCreatedToFirstAudioMs", "firstAudioFromStartMs", "modelLatencyMs", "inputTokens", "outputTokens", "totalTokens", "completed", "cancelled", "failed", "errors", "logPath"];
       const rows = loadHistory().map((item) => header.map((key) => JSON.stringify(item[key] ?? "")).join(","));
       const blob = new Blob([[header.join(",")].concat(rows).join("\n")], { type: "text/csv" });
       const url = URL.createObjectURL(blob);
@@ -428,7 +479,7 @@
       $("micButton").addEventListener("click", toggleMic);
       $("exportCsv").addEventListener("click", exportCsv);
       $("compareSelected").addEventListener("click", renderCompare);
-      $("clearHistory").addEventListener("click", () => { if (confirm("Clear local result history?")) { localStorage.removeItem(storageKey); renderHistory(); } });
+      $("clearHistory").addEventListener("click", () => { if (confirm("Clear local result history? Logs on disk will not be deleted.")) { localStorage.removeItem(storageKey); historyPage = 1; renderHistory(); } });
       ["providerEndpoint", "modelType", "authMode"].forEach((id) => $(id).addEventListener("input", renderSummary));
       try {
         await loadServerConfig();

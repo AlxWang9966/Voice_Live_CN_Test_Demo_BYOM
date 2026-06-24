@@ -10,6 +10,8 @@ logs/
 # Test artifacts / exports
 *.csv
 speech_turns_*.csv
+Demo_Code_Latency_Comparison.md
+original_demo_code/
 
 # Python
 __pycache__/
