@@ -86,6 +86,7 @@ BYOM_MINIMAX_API_KEY=<minimax-key>
 - Provider 专用 key 优先级更高，例如 Doubao 会优先使用 `BYOM_DOUBAO_API_KEY`。
 - 如果网页里临时粘贴 `Model key / token`，该值只用于本次运行，不会保存进历史结果。
 - 语速已固定为 `10%`，客户测试页面不提供语速调节。
+- 默认 instructions 会要求模型不要每轮固定以 `Hello` / `你好` 开头；如果客户自定义 `AZURE_VOICELIVE_INSTRUCTIONS`，建议保留这条约束。
 
 ## 6. 启动网页控制台
 

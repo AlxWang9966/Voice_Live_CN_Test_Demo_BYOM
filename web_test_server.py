@@ -22,6 +22,12 @@ from urllib.request import Request, urlopen
 ROOT = Path(__file__).resolve().parent
 HTML_FILE = ROOT / "VoiceLive_BYOM_Test_Console.html"
 LOG_DIR = ROOT / "logs"
+DEFAULT_VOICELIVE_INSTRUCTIONS = (
+    "你是一个自然、简洁、适合语音对话的中文助手。"
+    "优先使用用户提问的语言回答；用户使用中文时请直接用中文回答。"
+    "不要在每轮回复开头固定说 Hello、你好或其他寒暄，除非用户主动问候。"
+    "回答要适合语音播报，避免 Markdown。"
+)
 
 
 def load_local_env(*, override: bool = False) -> None:
@@ -529,6 +535,7 @@ def start_test(payload: dict[str, Any]) -> dict[str, Any]:
     byom_key = str(payload.get("providerKey") or provider_env(provider_key, "API_KEY") or "").strip()
     voice = str(payload.get("voice") or os.environ.get("AZURE_VOICELIVE_VOICE") or "zh-CN-XiaoxiaoMultilingualNeural").strip()
     voice_rate = str(os.environ.get("AZURE_VOICELIVE_VOICE_RATE") or "10%").strip()
+    instructions = str(os.environ.get("AZURE_VOICELIVE_INSTRUCTIONS") or DEFAULT_VOICELIVE_INSTRUCTIONS).strip()
 
     if not speech_endpoint:
         raise RuntimeError("Speech endpoint is required.")
@@ -563,6 +570,7 @@ def start_test(payload: dict[str, Any]) -> dict[str, Any]:
         "--byom-api-key", byom_key,
         "--byom-auth-scheme", auth_mode,
         "--voice-rate", voice_rate,
+        "--instructions", instructions,
         "--no-proactive-greeting",
         "--verbose",
     ]
@@ -585,6 +593,7 @@ def start_test(payload: dict[str, Any]) -> dict[str, Any]:
         "authMode": auth_mode,
         "voice": voice,
         "voiceRate": voice_rate,
+        "instructionsConfigured": bool(instructions),
     }
     process = subprocess.Popen(
         command,

@@ -37,6 +37,13 @@ from azure.ai.voicelive.models import (
 from dotenv import load_dotenv
 import pyaudio
 
+DEFAULT_VOICELIVE_INSTRUCTIONS = (
+    "你是一个自然、简洁、适合语音对话的中文助手。"
+    "优先使用用户提问的语言回答；用户使用中文时请直接用中文回答。"
+    "不要在每轮回复开头固定说 Hello、你好或其他寒暄，除非用户主动问候。"
+    "回答要适合语音播报，避免 Markdown。"
+)
+
 if TYPE_CHECKING:
     # Only needed for type checking; avoids runtime import issues
     from azure.ai.voicelive.aio import VoiceLiveConnection
@@ -648,8 +655,7 @@ def parse_arguments():
         type=str,
         default=os.environ.get(
             "AZURE_VOICELIVE_INSTRUCTIONS",
-            "You are a helpful AI assistant. Respond naturally and conversationally. Always start the conversation in English."
-            "Keep your responses concise but engaging.",
+            DEFAULT_VOICELIVE_INSTRUCTIONS,
         ),
     )
 
