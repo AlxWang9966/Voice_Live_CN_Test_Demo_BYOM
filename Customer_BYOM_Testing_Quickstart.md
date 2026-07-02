@@ -163,25 +163,13 @@ http://127.0.0.1:8765/
 | `Responses created/done` | 模型响应创建和完成次数。 |
 | `Audio chunks` | 返回的流式音频片段数。 |
 | `Turn end to first audio` | **最核心端到端体验指标**：从 Voice Live 检测到用户说话结束，到第一段 TTS 音频返回。 |
-| `ASR finalization` | ASR/VAD 收尾耗时：从用户说话结束到最终转写完成。 |
-| `LLM first text` | **最核心 LLM 指标**：从最终转写完成到模型首个流式文本返回。 |
-| `TTS first audio` | TTS 首音频耗时：从模型首个流式文本返回到第一段音频返回。 |
+| `Turn end to response created` | 从用户说话结束，到 Voice Live 创建响应对象的时间。 |
+| `Response created to first audio` | 从响应对象创建，到第一段音频返回的时间。 |
 | `First audio from start` | 诊断指标：从本次测试进程启动到第一段音频返回，包含 session 启动、用户等待和说话时间，不建议作为实时对话延迟主指标。 |
 | `Input/Output/Total tokens` | 模型 token 用量。 |
 | `Errors` | 服务或 BYOM 模型错误数量。 |
 
-点击结果详情可以看到更完整的字段、错误信息和每一轮对话的拆分指标。历史记录每页显示 10 条，点击 `Details` 后页面会自动跳到详情区域。选择多条结果后可以进行对比。
-
-三段式 latency 对应关系：
-
-```text
-用户说话结束
-  -> ASR finalization -> 最终转写完成
-  -> LLM first text   -> 模型首个流式文本
-  -> TTS first audio  -> 第一段语音音频
-```
-
-因此客户侧做模型对比时，建议重点看 `LLM first text`；做端到端语音体验对比时，建议重点看 `Turn end to first audio`。
+点击结果详情可以看到更完整的字段、错误信息、每一轮对话的基础 turn 指标，以及基于可观测事件的 latency timeline。该 timeline 只展示 process start、session ready、speech start/end、response created、first audio 等日志事件间隔，不做内部阶段推断。历史记录每页显示 10 条，点击 `Details` 后页面会自动跳到详情区域。选择多条结果后可以进行对比。
 
 ## 10. 常见问题
 
@@ -217,9 +205,8 @@ logs/<timestamp>_voicelive.log
 | Status | Passed / Failed |
 | Session id | 详情中的 `sessionId` |
 | Turn end to first audio | 页面指标中的 `Turn end to first audio` |
-| ASR finalization | 页面指标中的 `ASR finalization` |
-| LLM first text | 页面指标中的 `LLM first text` |
-| TTS first audio | 页面指标中的 `TTS first audio` |
+| Turn end to response created | 页面指标中的 `Turn end to response created` |
+| Response created to first audio | 页面指标中的 `Response created to first audio` |
 | Total tokens | 页面指标中的 `Total tokens` |
 | 主观体验 | 流畅 / 有卡顿 / 延迟高 |
 | 错误信息 | 只记录错误文本，不记录 key |

@@ -117,11 +117,31 @@
     .detail-item.primary { border-color: var(--cp-accent); background: var(--cp-accent-soft); }
     .detail-item.primary strong { font-size: 22px; }
     .detail-wide { grid-column: 1 / -1; }
+    .observed-timeline { background: linear-gradient(180deg, #fff, var(--cp-surface-soft)); }
+    .timeline-head { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+    .timeline-title strong { margin: 0; font-size: 18px; }
+    .timeline-note { color: var(--cp-text-soft); font-size: 12px; margin-top: 2px; }
+    .timeline-actions { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+    .timeline-actions select { min-width: 130px; padding: 7px 10px; border: 1px solid var(--cp-border); border-radius: 0.5rem; background: #fff; color: var(--cp-text); }
+    .timeline-total { display: grid; gap: 0; color: var(--cp-accent); font-size: 24px; font-weight: 800; line-height: 1.05; text-align: right; }
+    .timeline-total span { color: var(--cp-text-soft); font-size: 11px; font-weight: 650; text-transform: uppercase; letter-spacing: 0.04em; }
+    .timeline-bar { display: flex; overflow: hidden; border: 1px solid var(--cp-border); border-radius: 0.75rem; background: #fff; min-height: 96px; }
+    .timeline-segment { display: grid; grid-template-rows: auto auto auto; align-content: center; gap: 4px; min-width: 120px; padding: 14px 16px; border-right: 1px solid rgba(0,0,0,0.08); }
+    .timeline-segment:last-child { border-right: 0; }
+    .timeline-segment strong { margin: 0; font-size: 15px; line-height: 1.2; }
+    .timeline-segment .segment-value { color: var(--cp-text); font-size: 22px; font-weight: 800; line-height: 1.05; }
+    .timeline-segment .segment-hint { font-size: 12px; color: var(--cp-text-soft); line-height: 1.3; }
+    .timeline-segment.setup { background: #eef2ff; }
+    .timeline-segment.wait { background: #f8fafc; }
+    .timeline-segment.speech { background: #fef3c7; }
+    .timeline-segment.response { background: #e9f8ef; }
+    .timeline-segment.audio { background: #fff1df; }
+    .timeline-segment.missing { background: #f3f4f6; color: var(--cp-text-soft); }
     .pager { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; justify-content: space-between; margin-top: 10px; }
     .tag { display: inline-flex; align-items: center; padding: 3px 7px; border-radius: 999px; background: var(--cp-accent-soft); color: var(--cp-text); font-size: 12px; }
     .link-button { border: 0; background: transparent; color: var(--cp-link); padding: 0; cursor: pointer; font-weight: 650; }
     @media (max-width: 900px) { .layout, .field-grid { grid-template-columns: 1fr; } .summary, .metrics, .detail-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } header { display: grid; } }
-    @media (max-width: 560px) { .shell { padding: 16px; } .summary, .metrics, .detail-grid { grid-template-columns: 1fr; } }
+    @media (max-width: 560px) { .shell { padding: 16px; } .summary, .metrics, .detail-grid { grid-template-columns: 1fr; } .timeline-bar { display: grid; } }
   </style>
 </head>
 <body>
@@ -164,7 +184,7 @@
             <div class="metric"><span class="small">Ready</span><strong id="metricReady">No</strong></div>
             <div class="metric"><span class="small">Speech turns</span><strong id="metricSpeech">0</strong></div>
             <div class="metric"><span class="small">Audio chunks</span><strong id="metricDelta">0</strong></div>
-            <div class="metric"><span class="small">Errors</span><strong id="metricErrors">0</strong></div>
+            <div class="metric"><span class="small">Responses</span><strong id="metricResponses">0 / 0</strong></div>
           </div>
           <p class="small" id="runHint" style="margin-top: 10px;">After starting, speak into the machine microphone. The Python demo handles microphone capture and speaker playback.</p>
         </section>
@@ -193,6 +213,7 @@
     let mic = { stream: null, context: null, frame: 0 };
     let lastSavedFingerprint = "";
     let selectedResultId = "";
+    let selectedTurnByResult = {};
     let compareIds = [];
     let historyPage = 1;
     let serverConfig = { providerKeysConfigured: {} };
@@ -203,8 +224,8 @@
     const metricFields = [
       ["status", "Status"], ["ready", "Ready"], ["durationMs", "Run duration"], ["readyMs", "Ready latency"],
       ["speechStarted", "Speech turns"], ["transcripts", "Transcripts"], ["responseCreated", "Responses created"], ["responseDone", "Responses done"],
-      ["audioDelta", "Audio chunks"], ["audioDone", "Audio done"], ["asrFinalizationMs", "ASR finalization"], ["llmFirstTextMs", "LLM first text"], ["ttsFirstAudioMs", "TTS first audio"],
-      ["modelLatencyMs", "Turn end to response created"], ["responseCreatedToFirstAudioMs", "Response created to first audio"], ["firstAudioMs", "Turn end to first audio"],
+      ["audioDelta", "Audio chunks"], ["audioDone", "Audio done"], ["modelLatencyMs", "Turn end to response created"],
+      ["responseCreatedToFirstAudioMs", "Response created to first audio"], ["firstAudioMs", "Turn end to first audio"],
       ["firstAudioFromStartMs", "First audio from start"],
       ["inputTokens", "Input tokens"], ["outputTokens", "Output tokens"], ["totalTokens", "Total tokens"], ["errors", "Errors"]
     ];
@@ -273,7 +294,7 @@
       $("metricReady").textContent = metrics.ready ? "Yes" : "No";
       $("metricSpeech").textContent = String(metrics.speechStarted || 0);
       $("metricDelta").textContent = String(metrics.audioDelta || 0);
-      $("metricErrors").textContent = String((metrics.errors || 0) + (metrics.failed || 0));
+      $("metricResponses").textContent = `${metrics.responseDone || 0} / ${metrics.responseCreated || 0}`;
       $("outputTail").textContent = [status.logPath ? `Log: ${status.logPath}` : "No log yet", "", ...(status.outputTail || [])].join("\n");
       if (!status.running && metrics.model && metrics.status && metrics.status !== "Running") saveMetric(metrics, status);
     }
@@ -354,7 +375,7 @@
     function loadHistory() { try { return JSON.parse(localStorage.getItem(storageKey) || "[]"); } catch { return []; } }
 
     function fmt(value, key = "") {
-      if (value === null || value === undefined || value === "") return "-";
+      if (value === null || value === undefined || value === "") return "N/A";
       if (typeof value === "boolean") return value ? "Yes" : "No";
       if (key.endsWith("Ms") || key === "durationMs") return `${Math.round(value)} ms`;
       return String(value);
@@ -371,25 +392,86 @@
       return brokenCount >= 3 ? "[Transcript decode issue in source log]" : text;
     }
 
-    async function backfillSessionId(item) {
-      if (!item || item.sessionId || !item.logPath || sessionIdLookupAttempted.has(item.fingerprint)) return;
+    function numberOrNull(value) {
+      if (value === null || value === undefined || value === "") return null;
+      const numeric = Number(value);
+      return Number.isFinite(numeric) ? Math.max(0, numeric) : null;
+    }
+
+    function timelineTurns(item) {
+      const turns = (item.turnMetrics || []).filter((turn) => numberOrNull(turn.turnEndToFirstAudioMs) !== null || numberOrNull(turn.speechDurationMs) !== null);
+      if (turns.length) return turns;
+      return [{
+        index: 1,
+        speechStartedFromStartMs: item.firstSpeechMs,
+        speechStoppedFromStartMs: null,
+        responseCreatedFromStartMs: item.firstResponseCreatedFromStartMs,
+        firstAudioFromStartMs: item.firstAudioFromStartMs,
+        speechDurationMs: null,
+        turnEndToResponseCreatedMs: item.modelLatencyMs,
+        responseCreatedToFirstAudioMs: item.responseCreatedToFirstAudioMs,
+        turnEndToFirstAudioMs: item.firstAudioMs,
+        transcript: (item.transcriptSamples || [])[0] || "",
+      }];
+    }
+
+    function renderObservedTimeline(item) {
+      const turns = timelineTurns(item);
+      const selectedIndex = selectedTurnByResult[item.fingerprint] && turns.some((turn) => Number(turn.index) === Number(selectedTurnByResult[item.fingerprint]))
+        ? selectedTurnByResult[item.fingerprint]
+        : turns[0]?.index;
+      selectedTurnByResult[item.fingerprint] = selectedIndex;
+      const turn = turns.find((entry) => Number(entry.index) === Number(selectedIndex)) || turns[0];
+      const ready = numberOrNull(item.readyMs);
+      const speechStart = numberOrNull(turn.speechStartedFromStartMs);
+      const firstAudio = numberOrNull(turn.firstAudioFromStartMs);
+      const setupMs = ready;
+      const waitMs = ready !== null && speechStart !== null ? Math.max(0, speechStart - ready) : null;
+      const speechMs = numberOrNull(turn.speechDurationMs);
+      const responseCreateMs = numberOrNull(turn.turnEndToResponseCreatedMs);
+      const responseAudioMs = numberOrNull(turn.responseCreatedToFirstAudioMs);
+      const totalMs = firstAudio ?? numberOrNull(item.firstAudioFromStartMs) ?? numberOrNull(turn.turnEndToFirstAudioMs);
+      const parts = [
+        { key: "setup", label: "Setup", hint: "process start -> ready", value: setupMs },
+        { key: "wait", label: "Wait", hint: "ready -> speech start", value: waitMs },
+        { key: "speech", label: "Speech", hint: "speech start -> speech end", value: speechMs },
+        { key: "response", label: "Response created", hint: "turn end -> response created", value: responseCreateMs },
+        { key: "audio", label: "First audio", hint: "response created -> first audio", value: responseAudioMs },
+      ];
+      const denominator = Math.max(totalMs ?? parts.reduce((sum, part) => sum + (part.value ?? 0), 0), 1);
+      const segments = parts.map((part) => {
+        if (part.value === null) {
+          return `<div class="timeline-segment missing" style="flex:1 1 0;"><strong>${safe(part.label)}</strong><span class="segment-value">N/A</span><span class="segment-hint">${safe(part.hint)}</span></div>`;
+        }
+        const width = Math.max(9, (part.value / denominator) * 100);
+        return `<div class="timeline-segment ${part.key}" style="flex:${width} 1 0;"><strong>${safe(part.label)}</strong><span class="segment-value">${safe(fmt(part.value, "durationMs"))}</span><span class="segment-hint">${safe(part.hint)}</span></div>`;
+      }).join("");
+      const turnOptions = turns.map((entry) => `<option value="${safe(entry.index)}" ${Number(entry.index) === Number(turn.index) ? "selected" : ""}>Turn ${safe(entry.index)}</option>`).join("");
+      return `<div class="detail-item detail-wide observed-timeline"><div class="timeline-head"><div class="timeline-title"><span class="small">Observed latency timeline</span><strong>Turn ${safe(turn.index)}: Process start to first audio</strong><div class="timeline-note">Built from log/websocket events only; no internal-stage inference.</div></div><div class="timeline-actions"><select id="observedTimelineTurn" aria-label="Select turn">${turnOptions}</select><div class="timeline-total"><span>First audio from start</span>${safe(totalMs === null ? "N/A" : fmt(totalMs, "durationMs"))}</div></div></div><div class="timeline-bar">${segments}</div></div>`;
+    }
+
+    function needsMetricBackfill(item) {
+      if (!item) return false;
+      return !item.sessionId || !(item.turnMetrics || []).length;
+    }
+
+    async function backfillMetricFromLog(item) {
+      if (!item || !needsMetricBackfill(item) || !item.logPath || sessionIdLookupAttempted.has(item.fingerprint)) return;
       sessionIdLookupAttempted.add(item.fingerprint);
       try {
         const logName = String(item.logPath).split(/[\\/]/).pop() || "";
         if (!logName) return;
         const metric = await api(`/api/metric-from-log?log=${encodeURIComponent(logName)}`);
-        if (!metric?.sessionId) return;
+        if (!metric) return;
         const items = loadHistory();
         const index = items.findIndex((historyItem) => historyItem.fingerprint === item.fingerprint);
         if (index < 0) return;
-        items[index].sessionId = metric.sessionId;
+        const fingerprint = items[index].fingerprint;
+        items[index] = { ...items[index], ...metric, fingerprint, savedAt: items[index].savedAt };
         localStorage.setItem(storageKey, JSON.stringify(items.slice(0, 50)));
-        if (selectedResultId === item.fingerprint) {
-          const sessionNode = $("detailSessionId");
-          if (sessionNode) sessionNode.textContent = metric.sessionId;
-        }
+        if (selectedResultId === item.fingerprint) renderHistory();
       } catch {
-        // Old entries may point to logs that no longer exist; keep showing "-".
+        // Old entries may point to logs that no longer exist; keep showing the saved values.
       }
     }
 
@@ -434,13 +516,18 @@
       if (!item) return;
       const config = item.testConfig || {};
       const sessionId = item.sessionId || "-";
-      const cards = metricFields.map(([key, label]) => `<div class="detail-item ${primaryMetricKeys.has(key) ? "primary" : ""}"><span class="small">${label}</span><strong>${safe(fmt(item[key], key))}</strong></div>`).join("");
+      const cards = metricFields.map(([key, label]) => `<div class="detail-item ${primaryMetricKeys.has(key) ? "primary" : ""}"><span class="small">${safe(label)}</span><strong>${safe(fmt(item[key], key))}</strong></div>`).join("");
+      const timeline = renderObservedTimeline(item);
       const transcripts = (item.transcriptSamples || []).map((text) => `<span class="tag">${safe(normalizeTranscript(text))}</span>`).join(" ") || "-";
       const errors = (item.errorMessages || []).map((text) => `<span class="tag">${safe(text)}</span>`).join(" ") || "-";
-      const turnRows = (item.turnMetrics || []).map((turn) => `<tr><td>${safe(turn.index)}</td><td>${safe(fmt(turn.speechDurationMs, "speechDurationMs"))}</td><td>${safe(fmt(turn.asrFinalizationMs, "asrFinalizationMs"))}</td><td>${safe(fmt(turn.llmFirstTextMs, "llmFirstTextMs"))}</td><td>${safe(fmt(turn.ttsFirstAudioMs, "ttsFirstAudioMs"))}</td><td><strong>${safe(fmt(turn.turnEndToFirstAudioMs, "turnEndToFirstAudioMs"))}</strong></td><td>${safe(normalizeTranscript(turn.transcript || ""))}</td></tr>`).join("");
-      const turnTable = turnRows ? `<table><thead><tr><th>Turn</th><th>Speech</th><th>ASR final</th><th>LLM first text</th><th>TTS first audio</th><th>Turn to audio</th><th>Transcript</th></tr></thead><tbody>${turnRows}</tbody></table>` : "-";
-      $("detailWrap").innerHTML = `<div class="panel" style="box-shadow:none;"><div class="inline" style="justify-content: space-between; margin-bottom: 12px;"><h2>Run details</h2><span class="small">${safe(item.logPath || "No log")}</span></div><div class="detail-grid">${cards}<div class="detail-item detail-wide"><span class="small">Configuration</span><strong>${safe(config.providerLabel || item.model || "")} / ${safe(config.modelType || item.modelType || "")} / ${safe(config.authMode || "")}</strong><div class="small">${safe(config.byomEndpoint || "")}</div></div><div class="detail-item detail-wide"><span class="small">Session ID</span><strong id="detailSessionId">${safe(sessionId)}</strong></div><div class="detail-item detail-wide"><span class="small">Turn metrics</span>${turnTable}</div><div class="detail-item detail-wide"><span class="small">Transcript samples</span><strong>${transcripts}</strong></div><div class="detail-item detail-wide"><span class="small">Errors</span><strong>${errors}</strong></div></div></div>`;
-      backfillSessionId(item);
+      const turnRows = (item.turnMetrics || []).map((turn) => `<tr><td>${safe(turn.index)}</td><td>${safe(fmt(turn.speechDurationMs, "speechDurationMs"))}</td><td>${safe(fmt(turn.turnEndToResponseCreatedMs, "turnEndToResponseCreatedMs"))}</td><td>${safe(fmt(turn.responseCreatedToFirstAudioMs, "responseCreatedToFirstAudioMs"))}</td><td><strong>${safe(fmt(turn.turnEndToFirstAudioMs, "turnEndToFirstAudioMs"))}</strong></td><td>${safe(normalizeTranscript(turn.transcript || ""))}</td></tr>`).join("");
+      const turnTable = turnRows ? `<table><thead><tr><th>Turn</th><th>Speech</th><th>Turn to response created</th><th>Response to audio</th><th>Turn to audio</th><th>Transcript</th></tr></thead><tbody>${turnRows}</tbody></table>` : "-";
+      $("detailWrap").innerHTML = `<div class="panel" style="box-shadow:none;"><div class="inline" style="justify-content: space-between; margin-bottom: 12px;"><h2>Run details</h2><span class="small">${safe(item.logPath || "No log")}</span></div><div class="detail-grid">${cards}${timeline}<div class="detail-item detail-wide"><span class="small">Configuration</span><strong>${safe(config.providerLabel || item.model || "")} / ${safe(config.modelType || item.modelType || "")} / ${safe(config.authMode || "")}</strong><div class="small">${safe(config.byomEndpoint || "")}</div></div><div class="detail-item detail-wide"><span class="small">Session ID</span><strong id="detailSessionId">${safe(sessionId)}</strong></div><div class="detail-item detail-wide"><span class="small">Turn metrics</span>${turnTable}</div><div class="detail-item detail-wide"><span class="small">Transcript samples</span><strong>${transcripts}</strong></div><div class="detail-item detail-wide"><span class="small">Errors</span><strong>${errors}</strong></div></div></div>`;
+      $("observedTimelineTurn")?.addEventListener("change", (event) => {
+        selectedTurnByResult[item.fingerprint] = event.target.value;
+        renderDetail(item);
+      });
+      backfillMetricFromLog(item);
     }
 
     function toggleCompare(id, checked) {
@@ -461,7 +548,7 @@
     }
 
     function exportCsv() {
-      const header = ["savedAt", "runId", "sessionId", "model", "provider", "modelType", "status", "ready", "durationMs", "readyMs", "speechStarted", "speechStopped", "transcripts", "responseCreated", "responseDone", "audioDelta", "audioDone", "asrFinalizationMs", "llmFirstTextMs", "ttsFirstAudioMs", "firstAudioMs", "responseCreatedToFirstAudioMs", "firstAudioFromStartMs", "modelLatencyMs", "inputTokens", "outputTokens", "totalTokens", "completed", "cancelled", "failed", "errors", "logPath"];
+      const header = ["savedAt", "runId", "sessionId", "model", "provider", "modelType", "status", "ready", "durationMs", "readyMs", "speechStarted", "speechStopped", "transcripts", "responseCreated", "responseDone", "audioDelta", "audioDone", "modelLatencyMs", "responseCreatedToFirstAudioMs", "firstAudioMs", "firstAudioFromStartMs", "inputTokens", "outputTokens", "totalTokens", "completed", "cancelled", "failed", "errors", "logPath"];
       const rows = loadHistory().map((item) => header.map((key) => JSON.stringify(item[key] ?? "")).join(","));
       const blob = new Blob([[header.join(",")].concat(rows).join("\n")], { type: "text/csv" });
       const url = URL.createObjectURL(blob);

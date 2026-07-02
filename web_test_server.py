@@ -253,7 +253,6 @@ def parse_log(text: str, model_label: str | None = None, run_id: str | None = No
     first_transcript_ts: float | None = None
     first_response_created_ts: float | None = None
     first_response_done_ts: float | None = None
-    first_output_text_ts: float | None = None
     first_audio_ts: float | None = None
     session_id: str = ""
 
@@ -299,7 +298,6 @@ def parse_log(text: str, model_label: str | None = None, run_id: str | None = No
                 "transcript": "",
                 "responseId": "",
                 "responseCreatedTs": None,
-                "firstOutputTextTs": None,
                 "firstAudioTs": None,
                 "responseDoneTs": None,
             })
@@ -333,11 +331,7 @@ def parse_log(text: str, model_label: str | None = None, run_id: str | None = No
                         response_turns[response_id] = turn
                     break
         elif event_type == "response.audio_transcript.delta":
-            first_output_text_ts = first_output_text_ts or ts
-            response_id = str(event.get("response_id") or "")
-            turn = response_turns.get(response_id)
-            if turn and turn["firstOutputTextTs"] is None:
-                turn["firstOutputTextTs"] = ts
+            pass
         elif event_type == "response.audio.delta" and first_audio_ts is None:
             first_audio_ts = ts
             response_id = str(event.get("response_id") or "")
@@ -377,21 +371,20 @@ def parse_log(text: str, model_label: str | None = None, run_id: str | None = No
     turn_metrics: list[dict[str, Any]] = []
     for turn in turns:
         speech_stop = turn["speechStoppedTs"]
-        transcript_done = turn["transcriptTs"]
         response_created = turn["responseCreatedTs"]
-        first_output_text = turn["firstOutputTextTs"]
         first_audio = turn["firstAudioTs"]
         response_done = turn["responseDoneTs"]
         turn_metrics.append({
             "index": turn["index"],
             "responseId": turn["responseId"],
             "transcript": turn["transcript"],
+            "speechStartedFromStartMs": elapsed_ms(first_ts, turn["speechStartedTs"]),
+            "speechStoppedFromStartMs": elapsed_ms(first_ts, speech_stop),
+            "responseCreatedFromStartMs": elapsed_ms(first_ts, response_created),
+            "firstAudioFromStartMs": elapsed_ms(first_ts, first_audio),
+            "responseDoneFromStartMs": elapsed_ms(first_ts, response_done),
             "speechDurationMs": elapsed_ms(turn["speechStartedTs"], speech_stop),
-            "asrFinalizationMs": elapsed_ms(speech_stop, transcript_done),
             "turnEndToResponseCreatedMs": elapsed_ms(speech_stop, response_created),
-            "llmFirstTextMs": elapsed_ms(transcript_done, first_output_text),
-            "responseCreatedToFirstTextMs": elapsed_ms(response_created, first_output_text),
-            "ttsFirstAudioMs": elapsed_ms(first_output_text, first_audio),
             "turnEndToFirstAudioMs": elapsed_ms(speech_stop, first_audio),
             "responseCreatedToFirstAudioMs": elapsed_ms(response_created, first_audio),
             "turnEndToResponseDoneMs": elapsed_ms(speech_stop, response_done),
@@ -399,7 +392,6 @@ def parse_log(text: str, model_label: str | None = None, run_id: str | None = No
 
     first_user_turn = next((turn for turn in turn_metrics if turn["turnEndToFirstAudioMs"] is not None), None)
     first_response_turn = next((turn for turn in turn_metrics if turn["turnEndToResponseCreatedMs"] is not None), None)
-    first_text_turn = next((turn for turn in turn_metrics if turn["llmFirstTextMs"] is not None), None)
     if not session_id:
         fallback_match = SESSION_ID_RE.search(text)
         if fallback_match:
@@ -437,14 +429,9 @@ def parse_log(text: str, model_label: str | None = None, run_id: str | None = No
         "firstResponseDoneMs": elapsed_ms(first_ts, first_response_done_ts),
         "firstAudioMs": first_user_turn["turnEndToFirstAudioMs"] if first_user_turn else None,
         "firstAudioFromStartMs": elapsed_ms(first_ts, first_audio_ts),
-        "asrFinalizationMs": first_text_turn["asrFinalizationMs"] if first_text_turn else None,
-        "llmFirstTextMs": first_text_turn["llmFirstTextMs"] if first_text_turn else None,
-        "responseCreatedToFirstTextMs": first_text_turn["responseCreatedToFirstTextMs"] if first_text_turn else None,
-        "ttsFirstAudioMs": first_user_turn["ttsFirstAudioMs"] if first_user_turn else None,
         "modelLatencyMs": first_response_turn["turnEndToResponseCreatedMs"] if first_response_turn else None,
         "firstAudioAfterSpeechMs": first_user_turn["turnEndToFirstAudioMs"] if first_user_turn else None,
         "responseCreatedToFirstAudioMs": first_user_turn["responseCreatedToFirstAudioMs"] if first_user_turn else None,
-        "firstOutputTextFromStartMs": elapsed_ms(first_ts, first_output_text_ts),
         "turnMetrics": turn_metrics,
         "inputTokens": token_totals["input"],
         "outputTokens": token_totals["output"],
