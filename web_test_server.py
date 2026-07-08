@@ -208,8 +208,47 @@ def metric_from_log_name(log_name: str) -> dict[str, Any]:
     return parse_log(read_log(path), run_id=run_id)
 
 
+def build_model_label_map() -> dict[str, tuple[str, str]]:
+    """Map a model/deployment name (lowercased) to (providerLabel, providerKey)."""
+    label_map: dict[str, tuple[str, str]] = {}
+    for source in (MODEL_PRESETS, presets_for_client()):
+        for key, preset in source.items():
+            model_type = str(preset.get("modelType") or "").strip().lower()
+            if model_type:
+                label_map[model_type] = (str(preset.get("label") or key), key)
+    return label_map
+
+
+def history_items(limit: int = 200) -> list[dict[str, Any]]:
+    if not LOG_DIR.exists():
+        return []
+    files = sorted(LOG_DIR.glob("*_voicelive.log"), key=lambda item: item.stat().st_mtime, reverse=True)
+    label_map = build_model_label_map()
+    items: list[dict[str, Any]] = []
+    for path in files[:limit]:
+        try:
+            metrics = parse_log(read_log(path), run_id=path.stem)
+        except Exception:
+            continue
+        model_type = str(metrics.get("modelType") or "").strip()
+        label, provider_key = label_map.get(model_type.lower(), ("", ""))
+        metrics["model"] = label or model_type
+        metrics["provider"] = provider_key or metrics.get("provider", "")
+        metrics["modelType"] = model_type
+        metrics["fingerprint"] = path.stem
+        metrics["logPath"] = path.name
+        metrics["savedAt"] = datetime.fromtimestamp(path.stat().st_mtime).isoformat()
+        metrics["source"] = "log"
+        # Strip large per-turn and per-event detail; frontend fetches on demand via /api/metric-from-log.
+        metrics.pop("turnMetrics", None)
+        metrics.pop("eventCounts", None)
+        items.append(metrics)
+    return items
+
+
 LOG_LINE_RE = re.compile(r"^(?P<ts>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d{3}):(?P<body>.*)$")
 SESSION_ID_RE = re.compile(r"\bsess_[A-Za-z0-9]+\b")
+CONNECT_MODEL_RE = re.compile(r"Connecting to VoiceLive API with model (?P<model>.+?)\s*$")
 
 
 def parse_log_time(value: str) -> float | None:
@@ -255,6 +294,7 @@ def parse_log(text: str, model_label: str | None = None, run_id: str | None = No
     first_response_done_ts: float | None = None
     first_audio_ts: float | None = None
     session_id: str = ""
+    log_model_type: str = ""
 
     for line in text.splitlines():
         match = LOG_LINE_RE.match(line)
@@ -269,6 +309,10 @@ def parse_log(text: str, model_label: str | None = None, run_id: str | None = No
             audio_ready_ts = ts
         if ("Voice assistant ready" in body or "Session ready" in body) and ready_ts is None:
             ready_ts = ts
+        if not log_model_type and "Connecting to VoiceLive API with model" in body:
+            connect_match = CONNECT_MODEL_RE.search(body)
+            if connect_match:
+                log_model_type = connect_match.group("model").strip()
         event = parse_json_event(body)
         if not event:
             continue
@@ -403,7 +447,7 @@ def parse_log(text: str, model_label: str | None = None, run_id: str | None = No
         "sessionId": session_id,
         "model": model_label or "",
         "provider": config.get("provider", ""),
-        "modelType": config.get("modelType", ""),
+        "modelType": config.get("modelType") or log_model_type or "",
         "status": "Running",
         "ready": "Voice assistant ready" in text or "Session ready" in text,
         "connected": "Connecting to VoiceLive API" in text,
@@ -703,6 +747,8 @@ class Handler(BaseHTTPRequestHandler):
                 if not log_name:
                     raise RuntimeError("Missing log query parameter")
                 json_response(self, 200, metric_from_log_name(log_name))
+            elif path == "/api/history":
+                json_response(self, 200, {"items": history_items()})
             elif path == "/api/status":
                 json_response(self, 200, current_status())
             elif path == "/api/config":

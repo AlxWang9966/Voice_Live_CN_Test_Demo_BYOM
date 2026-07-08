@@ -216,6 +216,7 @@
     let selectedTurnByResult = {};
     let compareIds = [];
     let historyPage = 1;
+    let historyLoading = false;
     let serverConfig = { providerKeysConfigured: {} };
     const storageKey = "voice-live-byom-web-results-v1";
     const historyPageSize = 10;
@@ -374,6 +375,48 @@
 
     function loadHistory() { try { return JSON.parse(localStorage.getItem(storageKey) || "[]"); } catch { return []; } }
 
+    function historyKey(item) {
+      return String((item && (item.logPath || item.fingerprint || item.runId)) || "").split(/[\\/]/).pop();
+    }
+
+    async function loadServerHistory() {
+      try {
+        const data = await api("/api/history");
+        return Array.isArray(data.items) ? data.items : [];
+      } catch {
+        return [];
+      }
+    }
+
+    function mergeAndPersistHistory(serverItems, localItems) {
+      const map = new Map();
+      const overlay = (item) => {
+        const key = historyKey(item);
+        if (!key) return;
+        const existing = map.get(key);
+        if (!existing) { map.set(key, { ...item }); return; }
+        const merged = { ...existing };
+        for (const [k, v] of Object.entries(item)) {
+          const empty = v === null || v === undefined || v === "" || (Array.isArray(v) && !v.length);
+          if (!empty) merged[k] = v;
+        }
+        map.set(key, merged);
+      };
+      // Server logs are the source of truth; local entries overlay richer fields (provider label, testConfig).
+      serverItems.forEach(overlay);
+      localItems.forEach(overlay);
+      const merged = Array.from(map.values());
+      merged.sort((a, b) => (new Date(b.savedAt || 0).getTime() || 0) - (new Date(a.savedAt || 0).getTime() || 0));
+      const trimmed = merged.slice(0, 200);
+      localStorage.setItem(storageKey, JSON.stringify(trimmed));
+      return trimmed;
+    }
+
+    async function syncHistoryFromServer() {
+      const serverItems = await loadServerHistory();
+      mergeAndPersistHistory(serverItems, loadHistory());
+    }
+
     function fmt(value, key = "") {
       if (value === null || value === undefined || value === "") return "N/A";
       if (typeof value === "boolean") return value ? "Yes" : "No";
@@ -468,7 +511,7 @@
         if (index < 0) return;
         const fingerprint = items[index].fingerprint;
         items[index] = { ...items[index], ...metric, fingerprint, savedAt: items[index].savedAt };
-        localStorage.setItem(storageKey, JSON.stringify(items.slice(0, 50)));
+        localStorage.setItem(storageKey, JSON.stringify(items.slice(0, 200)));
         if (selectedResultId === item.fingerprint) renderHistory();
       } catch {
         // Old entries may point to logs that no longer exist; keep showing the saved values.
@@ -482,7 +525,7 @@
       const items = loadHistory();
       if (items.some((item) => item.fingerprint === fingerprint)) return;
       items.unshift({ ...metric, fingerprint, savedAt: new Date().toISOString(), logPath: status.logPath, exitCode: status.exitCode, testConfig: status.testConfig || {} });
-      localStorage.setItem(storageKey, JSON.stringify(items.slice(0, 50)));
+      localStorage.setItem(storageKey, JSON.stringify(items.slice(0, 200)));
       historyPage = 1;
       renderHistory();
     }
@@ -490,7 +533,9 @@
     function renderHistory() {
       const items = loadHistory();
       if (!items.length) {
-        $("historyWrap").innerHTML = `<div class="small">No saved results yet.</div>`;
+        $("historyWrap").innerHTML = historyLoading
+          ? `<div class="small">Loading saved results from disk…</div>`
+          : `<div class="small">No saved results yet.</div>`;
         $("detailWrap").innerHTML = "";
         $("compareWrap").innerHTML = "";
         return;
@@ -575,6 +620,10 @@
         selectModel(selectedModel);
         await refreshStatus();
         startPolling();
+        // Load disk history in the background so the model list and controls render immediately.
+        historyLoading = true;
+        renderHistory();
+        syncHistoryFromServer().finally(() => { historyLoading = false; renderHistory(); });
       } catch (error) {
         $("serverState").textContent = "Server unavailable";
         $("runHint").textContent = "Open this page through the local server: py web_test_server.py --open";
